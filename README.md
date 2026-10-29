@@ -18,6 +18,14 @@ transport, so upstream changes stay easy to merge.
   are turned back into real values before the IT Glue call. Masking covers the
   `<itglue-data>` frame, `structuredContent` and error messages. The document
   card is dropped while masking is on. A failed analyzer redacts free text.
+- **`fields` and `count_only`** (`src/shaping.ts`). The search tools, the
+  list tools and `get_organization` / `get_configuration` / `get_location` take
+  `fields` (comma-separated camelCase names; `id` and `type` always kept;
+  `traits.<key>` for one flexible asset trait). The IT Glue API documents no
+  sparse fieldsets, so records are trimmed here before they reach the model.
+  `search_organizations`, `search_configurations`, `search_locations`,
+  `search_flexible_assets` and `search_user_metrics` take `count_only: true`,
+  which fetches one record and returns `{"count": N}` from `meta.total-count`.
 - **Audit log and access policy** (`MCP_AUDIT=on`, `MCP_POLICY=read|write|admin`).
   Read tools are `get_*`, `search_*`, `list_*` and `itglue_health_check`;
   `delete_*` needs admin; everything else is write.
