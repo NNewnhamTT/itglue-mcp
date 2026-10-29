@@ -198,8 +198,11 @@ export function shapeCallTool(inner: CallToolHandler): CallToolHandler {
       if ("error" in parsed) return refused(`${parsed.error}. Nothing was sent to IT Glue.`);
       names = parsed.names;
     }
-    const counting = countOnly === true;
-    if (countOnly !== undefined && countOnly !== false && !counting) {
+    // A client with a stale tool list does not know count_only is a boolean and
+    // sends the string "true" (seen live 2026-10-29). Accept both spellings.
+    const flag = typeof countOnly === "string" ? countOnly.trim().toLowerCase() : countOnly;
+    const counting = flag === true || flag === "true";
+    if (flag !== undefined && flag !== false && flag !== "false" && !counting) {
       return refused("count_only must be true or false. Nothing was sent to IT Glue.");
     }
     if (counting && !COUNT_TOOLS.has(name)) {
