@@ -206,6 +206,21 @@ describe("count_only", () => {
     expect(itgUrls).toHaveLength(0);
   });
 
+  it.each(["true", " TRUE "])("accepts count_only as the string %j (stale client tool list)", async (value) => {
+    itgBody = configs;
+    const client = await connect();
+    const result = await client.callTool({ name: "search_configurations", arguments: { organization_id: 1, count_only: value } });
+    expect(body(result)).toEqual({ count: 42 });
+    expect(itgUrls[0]).toContain("page[size]=1");
+  });
+
+  it("refuses a count_only value that is not true or false", async () => {
+    const client = await connect();
+    const result = await client.callTool({ name: "search_configurations", arguments: { organization_id: 1, count_only: "yes" } });
+    expect(text(result)).toContain("count_only must be true or false");
+    expect(itgUrls).toHaveLength(0);
+  });
+
   it("count_only=false is a normal search", async () => {
     itgBody = configs;
     const client = await connect();
