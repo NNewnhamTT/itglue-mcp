@@ -30,8 +30,8 @@
  *   AZURE_TENANT_ID             - Entra tenant GUID
  *   AZURE_CLIENT_ID             - App registration client ID
  *   AZURE_AUDIENCE              - Token audience, typically api://<AZURE_CLIENT_ID>
- *   AZURE_REQUIRED_ROLE         - App role required on every request (default: ITG.Access)
- *                                 ITG.Write and ITG.Admin also grant access and raise the level.
+ *   AZURE_REQUIRED_ROLE         - App role required on every request (default: ITGM.Access)
+ *                                 ITGM.Write and ITGM.Admin also grant access and raise the level.
  *   MCP_BEARER_TOKEN            - Static bearer token fallback (user "cli-user")
  */
 

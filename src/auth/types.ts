@@ -3,7 +3,7 @@ export interface EntraConfig {
   clientId: string;
   audience: string; // api://<clientId>
   extraAudiences: string[]; // additional accepted audiences (e.g. Teams federated connector)
-  requiredRole: string; // e.g. "ITG.Access"
+  requiredRole: string; // e.g. "ITGM.Access"
   serverUrl: string; // https://mcp.yourdomain.com (no trailing slash)
   bearerToken?: string; // static token for Claude Code CLI fallback
 }

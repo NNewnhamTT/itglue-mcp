@@ -40,9 +40,9 @@ describe("identity", () => {
   });
 
   it("maps Entra app roles to an access level", () => {
-    expect(identityFromEntra("a@b.com", ["ITG.Access"]).role).toBeUndefined();
-    expect(identityFromEntra("a@b.com", ["ITG.Access", "ITG.Write"]).role).toBe("write");
-    expect(identityFromEntra("a@b.com", ["ITG.Write", "ITG.Admin"]).role).toBe("admin");
+    expect(identityFromEntra("a@b.com", ["ITGM.Access"]).role).toBeUndefined();
+    expect(identityFromEntra("a@b.com", ["ITGM.Access", "ITGM.Write"]).role).toBe("write");
+    expect(identityFromEntra("a@b.com", ["ITGM.Write", "ITGM.Admin"]).role).toBe("admin");
     expect(identityFromEntra("a@b.com", []).source).toBe("entra");
   });
 });

@@ -1,7 +1,7 @@
 /**
  * Identity from Microsoft Entra ID over the real HTTP transport. Token
  * validation is stubbed (no network); everything after it is real: the
- * identity mapping, the ITG.Write / ITG.Admin app roles, the audit line and
+ * identity mapping, the ITGM.Write / ITGM.Admin app roles, the audit line and
  * the access policy.
  */
 
@@ -130,7 +130,7 @@ afterEach(async () => {
 
 describe("Entra identity", () => {
   it("names the caller from the validated token", async () => {
-    validate.fn = async () => identity("nick@tektrendz.com", ["ITG.Access"]);
+    validate.fn = async () => identity("nick@tektrendz.com", ["ITGM.Access"]);
     const port = await listen();
     const res = await post(port, { "x-gateway-s2s": s2s(), authorization: "Bearer fake.jwt.value" }, READ);
     expect(res.status).toBe(200);
@@ -143,8 +143,8 @@ describe("Entra identity", () => {
     });
   });
 
-  it("ITG.Access alone cannot write when the server default is read", async () => {
-    validate.fn = async () => identity("nick@tektrendz.com", ["ITG.Access"]);
+  it("ITGM.Access alone cannot write when the server default is read", async () => {
+    validate.fn = async () => identity("nick@tektrendz.com", ["ITGM.Access"]);
     const port = await listen();
     const res = await post(port, { "x-gateway-s2s": s2s(), authorization: "Bearer fake.jwt.value" }, UPDATE);
     expect(res.body).toContain("Blocked by access policy");
@@ -152,8 +152,8 @@ describe("Entra identity", () => {
     expect(audits()[0]).toMatchObject({ status: "denied", reason: "policy:read" });
   });
 
-  it("ITG.Write adds write access, ITG.Admin adds delete", async () => {
-    validate.fn = async () => identity("nick@tektrendz.com", ["ITG.Access", "ITG.Write"]);
+  it("ITGM.Write adds write access, ITGM.Admin adds delete", async () => {
+    validate.fn = async () => identity("nick@tektrendz.com", ["ITGM.Access", "ITGM.Write"]);
     const port = await listen();
     await post(port, { "x-gateway-s2s": s2s(), authorization: "Bearer fake.jwt.value" }, UPDATE);
     expect(itgCalls.some((c) => c.method === "PATCH")).toBe(true);
@@ -165,13 +165,13 @@ describe("Entra identity", () => {
     expect(blocked.body).toContain("Blocked by access policy");
     expect(itgCalls).toHaveLength(0);
 
-    validate.fn = async () => identity("sam@tektrendz.com", ["ITG.Access", "ITG.Admin"]);
+    validate.fn = async () => identity("sam@tektrendz.com", ["ITGM.Access", "ITGM.Admin"]);
     await post(port, { "x-gateway-s2s": s2s(), authorization: "Bearer fake.jwt.value" }, del);
     expect(itgCalls.some((c) => c.method === "DELETE")).toBe(true);
   });
 
   it("ignores X-Mcp-User and X-Mcp-Role when an Entra token validated", async () => {
-    validate.fn = async () => identity("nick@tektrendz.com", ["ITG.Access"]);
+    validate.fn = async () => identity("nick@tektrendz.com", ["ITGM.Access"]);
     const port = await listen();
     await post(
       port,
@@ -205,7 +205,7 @@ describe("Entra identity", () => {
   });
 
   it("does not put the Entra token or the S2S secret in any log line", async () => {
-    validate.fn = async () => identity("nick@tektrendz.com", ["ITG.Access"]);
+    validate.fn = async () => identity("nick@tektrendz.com", ["ITGM.Access"]);
     const port = await listen();
     await post(port, { "x-gateway-s2s": s2s(), authorization: "Bearer fake.jwt.value" }, READ);
     const all = auditLines.join("\n");

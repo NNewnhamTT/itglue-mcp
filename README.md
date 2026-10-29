@@ -26,7 +26,7 @@ transport, so upstream changes stay easy to merge.
   `X-Gateway-S2S` verifies). `MCP_OAUTH_ENABLED=true` adds the Entra OAuth
   routes and token check (`MCP_SERVER_URL`, `AZURE_TENANT_ID`,
   `AZURE_CLIENT_ID`, `AZURE_AUDIENCE`, `AZURE_REQUIRED_ROLE`, default
-  `ITG.Access`; app roles `ITG.Write` and `ITG.Admin` raise the level).
+  `ITGM.Access`; app roles `ITGM.Write` and `ITGM.Admin` raise the level).
 
 Deployment: the `itglue` profile of `docker-compose.stack.yml` in the
 ConnectWise Manage MCP fork, which shares its Presidio container and Caddy.
