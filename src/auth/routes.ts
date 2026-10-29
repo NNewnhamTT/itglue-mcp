@@ -1,0 +1,282 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { EntraConfig } from "./types.js";
+import { parseRequestTarget } from "../request-target.js";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function sendJson(res: ServerResponse, status: number, body: unknown): void {
+  const json = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json",
+    "Content-Length": Buffer.byteLength(json),
+  });
+  res.end(json);
+}
+
+/**
+ * An OAuth error code as RFC 6749 defines one: a short token such as
+ * "invalid_grant". Anything else is replaced, so no free text from the
+ * identity provider reaches a log.
+ */
+export function safeOAuthErrorCode(value: unknown): string {
+  return typeof value === "string" && /^[a-z_]{1,40}$/.test(value) ? value : "unrecognised_error";
+}
+
+/**
+ * The grant type of a token request, for the rejection log. Only the two
+ * grants this proxy advertises are logged by name. Anything else is replaced.
+ */
+export function safeGrantType(value: string | null): string {
+  return value === "authorization_code" || value === "refresh_token" ? value : "other";
+}
+
+/**
+ * The scope sent to Entra. The MCP server and its OAuth client are one app
+ * registration, so Entra treats a token request as "a token for itself". Entra
+ * accepts that only when the resource is written as the GUID app id: the
+ * api://<clientId> form fails with AADSTS90009. A v2 token carries the client
+ * id as `aud` either way, and validateToken accepts it.
+ */
+export function entraScope(config: EntraConfig): string {
+  return `${config.clientId}/access_as_user openid profile email offline_access`;
+}
+
+const MAX_BODY_BYTES = 65_536; // 64 KB — sufficient for any OAuth request body
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+
+    req.on("data", (chunk: Buffer) => {
+      totalBytes += chunk.length;
+      if (totalBytes > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error("Request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RFC 9728 — OAuth Protected Resource Metadata
+// GET /.well-known/oauth-protected-resource
+// ---------------------------------------------------------------------------
+
+export function handleProtectedResource(
+  res: ServerResponse,
+  config: EntraConfig,
+): void {
+  sendJson(res, 200, {
+    resource: `${config.serverUrl}/mcp`,
+    authorization_servers: [config.serverUrl],
+    bearer_methods_supported: ["header"],
+    scopes_supported: [`api://${config.clientId}/access_as_user`],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RFC 8414 — Authorization Server Metadata
+// GET /.well-known/oauth-authorization-server
+//
+// IMPORTANT: issuer must equal serverUrl (not Azure AD's issuer).
+// Claude.ai validates issuer === the URL prefix used to fetch this document.
+// ---------------------------------------------------------------------------
+
+export function handleAuthServerMetadata(
+  res: ServerResponse,
+  config: EntraConfig,
+): void {
+  sendJson(res, 200, {
+    issuer: config.serverUrl,
+    authorization_endpoint: `${config.serverUrl}/authorize`,
+    token_endpoint: `${config.serverUrl}/token`,
+    registration_endpoint: `${config.serverUrl}/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+    scopes_supported: [
+      `api://${config.clientId}/access_as_user`,
+      "openid",
+      "profile",
+      "email",
+      "offline_access",
+    ],
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Dynamic Client Registration (RFC 7591)
+// POST /register
+//
+// Azure AD doesn't support open DCR. We return the pre-registered client_id
+// and echo back the client's requested redirect_uris so any MCP client
+// (Claude.ai, VS Code / GitHub Copilot, Copilot Studio, Foundry agents, etc.)
+// can proceed with the OAuth flow. Azure AD enforces redirect_uri allowlist at
+// the /authorize step — these are not validated here.
+// ---------------------------------------------------------------------------
+
+export async function handleRegister(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: EntraConfig,
+): Promise<void> {
+  const rawBody = await readBody(req);
+
+  let requestedRedirectUris: string[] = [];
+  if (rawBody) {
+    try {
+      const parsed = JSON.parse(rawBody) as { redirect_uris?: unknown };
+      if (Array.isArray(parsed.redirect_uris)) {
+        requestedRedirectUris = parsed.redirect_uris.filter(
+          (u): u is string => typeof u === "string",
+        );
+      }
+    } catch {
+      // Non-JSON body — ignore and fall through with empty list
+    }
+  }
+
+  sendJson(res, 201, {
+    client_id: config.clientId,
+    client_id_issued_at: Math.floor(Date.now() / 1000),
+    redirect_uris: requestedRedirectUris,
+    grant_types: ["authorization_code", "refresh_token"],
+    token_endpoint_auth_method: "none",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Authorization proxy
+// GET /authorize
+//
+// Rewrites the request for Azure AD:
+//   - Replaces client_id with AZURE_CLIENT_ID
+//   - Replaces scope with the API scope
+//   - Passes PKCE params and redirect_uri through unchanged
+// ---------------------------------------------------------------------------
+
+export function handleAuthorize(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: EntraConfig,
+): void {
+  // Parsed against a fixed base, never the client-supplied Host header.
+  const incomingUrl = parseRequestTarget(req.url);
+  if (!incomingUrl) {
+    sendJson(res, 400, { error: "invalid_request" });
+    return;
+  }
+
+  const azureParams = new URLSearchParams();
+
+  // Pass through PKCE and flow params
+  for (const key of [
+    "response_type",
+    "redirect_uri",
+    "state",
+    "code_challenge",
+    "code_challenge_method",
+    "nonce",
+    "response_mode",
+    "login_hint",
+  ]) {
+    const val = incomingUrl.searchParams.get(key);
+    if (val !== null) azureParams.set(key, val);
+  }
+
+  // Override client_id and scope
+  azureParams.set("client_id", config.clientId);
+  azureParams.set("scope", entraScope(config));
+
+  const azureAuthUrl =
+    `https://login.microsoftonline.com/${config.tenantId}/oauth2/v2.0/authorize?` +
+    azureParams.toString();
+
+  res.writeHead(302, { Location: azureAuthUrl });
+  res.end();
+}
+
+// ---------------------------------------------------------------------------
+// Token proxy
+// POST /token
+//
+// Proxies the token exchange to Azure AD, replacing client_id.
+// ---------------------------------------------------------------------------
+
+export async function handleToken(
+  req: IncomingMessage,
+  res: ServerResponse,
+  config: EntraConfig,
+): Promise<void> {
+  const body = await readBody(req);
+  const params = new URLSearchParams(body);
+
+  // Override client_id; drop resource (Azure AD v2 uses scope, not resource —
+  // sending both causes AADSTS9010010 when they don't match)
+  params.set("client_id", config.clientId);
+  params.delete("resource");
+
+  // If scope is present (e.g. sent by Claude.ai), replace it with our API scope
+  if (params.has("scope")) {
+    params.set("scope", entraScope(config));
+  }
+
+  const azureTokenUrl = `https://login.microsoftonline.com/${config.tenantId}/oauth2/v2.0/token`;
+
+  try {
+    const azureRes = await fetch(azureTokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+    });
+
+    const azureBody = await azureRes.text();
+    if (azureRes.status !== 200) {
+      let sanitized: { error: string; error_description?: string };
+      try {
+        const parsed = JSON.parse(azureBody) as { error?: string; error_description?: string };
+        sanitized = {
+          error: parsed.error ?? "invalid_request",
+          error_description: parsed.error_description,
+        };
+      } catch {
+        sanitized = { error: "invalid_request" };
+      }
+      // Log the status, the grant type and the OAuth error code only. The raw
+      // Azure body is never logged: it can carry tenant detail, trace ids and
+      // token material.
+      console.error(
+        JSON.stringify({
+          event: "token_exchange_rejected",
+          grant: safeGrantType(params.get("grant_type")),
+          status: azureRes.status,
+          error: safeOAuthErrorCode(sanitized.error),
+        }),
+      );
+      res.writeHead(azureRes.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(sanitized));
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(azureBody);
+  } catch (err) {
+    // The error can hold request detail in its cause chain. Log its name only.
+    console.error(
+      JSON.stringify({
+        event: "token_proxy_error",
+        error: err instanceof Error ? err.name : "unknown",
+      }),
+    );
+    res.writeHead(502, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "token_proxy_error", error_description: "Failed to reach Azure AD" }));
+  }
+}

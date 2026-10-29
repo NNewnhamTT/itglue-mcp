@@ -346,8 +346,6 @@ describe("Tool Definitions", () => {
     { name: "get_location", requiredFields: ["id"], properties: ["id"] },
     { name: "create_location", requiredFields: ["organization_id", "name"], properties: ["organization_id", "name", "country_id", "region_id", "address_1", "address_2", "city", "postal_code", "phone", "fax", "notes", "primary"] },
     { name: "update_location", requiredFields: ["organization_id", "id"], properties: ["organization_id", "id", "name", "country_id", "region_id", "address_1", "address_2", "city", "postal_code", "phone", "fax", "notes", "primary"] },
-    { name: "search_passwords", requiredFields: [] as string[], properties: ["organization_id", "name", "password_category_id", "url", "username", "page_size", "page_number", "sort"] },
-    { name: "get_password", requiredFields: ["id"], properties: ["id", "show_password"] },
     { name: "search_documents", requiredFields: ["organization_id"] as string[], properties: ["organization_id", "name", "page_size", "page_number", "sort"] },
     { name: "get_document", requiredFields: ["organization_id", "id"], properties: ["organization_id", "id"] },
     { name: "list_document_folders", requiredFields: ["organization_id"], properties: ["organization_id", "name", "page_size", "page_number"] },
@@ -382,8 +380,8 @@ describe("Tool Definitions", () => {
     });
   });
 
-  it("should have 31 tools total", () => {
-    expect(tools.length).toBe(31);
+  it("should have 29 tools total", () => {
+    expect(tools.length).toBe(29);
   });
 });
 
@@ -1118,7 +1116,7 @@ describe("Unknown Tool Handling", () => {
     const client = await connectClient();
     const { tools } = await client.listTools();
 
-    expect(tools.length).toBe(31);
+    expect(tools.length).toBe(29);
     // Every advertised tool must reach a real branch — not the Unknown-tool
     // default — so a rename in the ListTools block can't drift from the switch.
     for (const tool of tools) {
@@ -1676,10 +1674,10 @@ describe("Locations tools (round-trip)", () => {
     );
   });
 
-  it("exposes 31 tools total", async () => {
+  it("exposes 29 tools total", async () => {
     const client = await connectLocationsClient();
     const { tools } = await client.listTools();
-    expect(tools.length).toBe(31);
+    expect(tools.length).toBe(29);
   });
 
   it("search_locations queries /locations filtered by organization and city", async () => {
@@ -1897,12 +1895,11 @@ describe("Locations tools (round-trip)", () => {
   });
 });
 
-// Exercises the REAL password handlers (CallTool) over an in-memory transport
-// pair. The previous "password" tests in this file mocked fetch and then called
-// fetch directly, asserting on the mock's own payload — the search_passwords /
-// get_password handlers were never executed, so the whole surface was
-// effectively untested. fetch stays mocked underneath.
-describe("Password tools (round-trip)", () => {
+// TekTrendz: the password tools are removed (src/hardening.ts). Password values
+// must never reach a model or a transcript. These tests replace upstream's
+// "Password tools (round-trip)" block and check that nothing reaches
+// /passwords. fetch stays mocked underneath.
+describe("Password tools (removed)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1926,238 +1923,43 @@ describe("Password tools (round-trip)", () => {
     return (result as { isError?: boolean }).isError === true;
   }
 
-  it("search_passwords scopes to the organization and forces show_password=false", async () => {
+  it("does not list search_passwords or get_password", async () => {
     const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse(
-        createJsonApiResponse([
-          {
-            id: "1",
-            type: "passwords",
-            attributes: { name: "VPN Admin", username: "admin" },
-          },
-        ])
-      )
-    );
-
-    const result = await client.callTool({
-      name: "search_passwords",
-      arguments: { organization_id: 8637099 },
-    });
-
-    const url = decodeURIComponent(mockFetch.mock.calls[0][0] as string);
-    expect(url).toContain("/passwords?");
-    expect(url).toContain("filter[organization-id]=8637099");
-    // Security: a list call must never ask IT Glue for secret material.
-    expect(url).toContain("show_password=false");
-    expect(firstText(result)).toContain("VPN Admin");
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name);
+    expect(names).not.toContain("search_passwords");
+    expect(names).not.toContain("get_password");
   });
 
-  it("search_passwords never returns a password value even if the API sends one", async () => {
-    // The fixture deliberately DOES carry a secret: show_password=false is a
-    // request to IT Glue, not a guarantee, so the list tool has to redact on the
-    // way out too. An earlier version of this test used a secret-free fixture
-    // and therefore passed against a handler that had no redaction at all.
+  it.each(["search_passwords", "get_password"])("refuses %s without calling IT Glue", async (name) => {
     const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse(
-        createJsonApiResponse([
-          {
-            id: "1",
-            type: "passwords",
-            attributes: {
-              name: "VPN Admin",
-              username: "admin",
-              password: "hunter2",
-            },
-          },
-        ])
-      )
-    );
-
-    const result = await client.callTool({
-      name: "search_passwords",
-      arguments: { organization_id: 8637099 },
-    });
-
-    const text = firstText(result);
-    expect(text).not.toContain("hunter2");
-    // the rest of the record still comes through
-    expect(text).toContain("VPN Admin");
-    expect(text).toContain("admin");
-  });
-
-  it("get_password still returns the secret — redaction is list-only", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse({
-        data: {
-          id: "55555",
-          type: "passwords",
-          attributes: { name: "Server Root", password: "hunter2" },
-        },
-      })
-    );
-
-    const result = await client.callTool({
-      name: "get_password",
-      arguments: { id: "55555" },
-    });
-
-    expect(firstText(result)).toContain("hunter2");
-  });
-
-  it("search_passwords passes name, username and category filters through", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse(createJsonApiResponse([]))
-    );
-
-    await client.callTool({
-      name: "search_passwords",
-      arguments: {
-        organization_id: 8637099,
-        name: "VPN",
-        username: "admin",
-        password_category_id: 5,
-      },
-    });
-
-    const url = decodeURIComponent(mockFetch.mock.calls[0][0] as string);
-    expect(url).toContain("filter[name]=VPN");
-    expect(url).toContain("filter[username]=admin");
-    expect(url).toContain("filter[password-category-id]=5");
-  });
-
-  it("get_password requests the secret value by default", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse({
-        data: {
-          id: "55555",
-          type: "passwords",
-          attributes: { name: "Server Root", username: "root", password: "hunter2" },
-        },
-      })
-    );
-
-    const result = await client.callTool({
-      name: "get_password",
-      arguments: { id: "55555" },
-    });
-
-    const url = decodeURIComponent(mockFetch.mock.calls[0][0] as string);
-    expect(url).toContain("/passwords/55555");
-    expect(url).toContain("show_password=true");
-    expect(firstText(result)).toContain("hunter2");
-  });
-
-  it("get_password honours show_password=false", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse({
-        data: {
-          id: "55555",
-          type: "passwords",
-          attributes: { name: "Server Root", username: "root" },
-        },
-      })
-    );
-
-    await client.callTool({
-      name: "get_password",
-      arguments: { id: "55555", show_password: false },
-    });
-
-    const url = decodeURIComponent(mockFetch.mock.calls[0][0] as string);
-    expect(url).toContain("show_password=false");
-  });
-
-  it("get_password returns an error when id is missing", async () => {
-    const client = await connectPasswordClient();
-    const result = await client.callTool({
-      name: "get_password",
-      arguments: {},
-    });
+    const result = await client.callTool({ name, arguments: { id: "55555", organization_id: 1 } });
     expect(isError(result)).toBe(true);
-    expect(firstText(result).toLowerCase()).toContain("id is required");
+    expect(firstText(result)).toContain(`Unknown tool: ${name}`);
     expect(mockFetch).not.toHaveBeenCalled();
   });
 
-  it("flags an account-wide search when no organization_id was given and the client cannot be asked", async () => {
-    // Through a gateway that does not proxy elicitation, elicitText() returns
-    // null and the handler silently drops org scoping — a caller asking for
-    // "the VPN password for Acme" gets an arbitrary slice of every org's
-    // passwords and concludes the entry does not exist. The result must say so.
+  it.each(["list_attachments", "create_attachment"])(
+    "refuses %s on password records without calling IT Glue",
+    async (name) => {
+      const client = await connectPasswordClient();
+      const result = await client.callTool({
+        name,
+        arguments: { resource_type: " Passwords ", resource_id: 1, attachment: "x", file_name: "a.txt" },
+      });
+      expect(isError(result)).toBe(true);
+      expect(firstText(result)).toContain("Password records are not available");
+      expect(mockFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("hides and refuses the password-audit prompt", async () => {
     const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse(
-        createJsonApiResponse([
-          { id: "1", type: "passwords", attributes: { name: "VPN Admin" } },
-        ])
-      )
-    );
-
-    const result = await client.callTool({
-      name: "search_passwords",
-      arguments: { name: "VPN" },
-    });
-
-    const url = decodeURIComponent(mockFetch.mock.calls[0][0] as string);
-    expect(url).not.toContain("filter[organization-id]");
-    const text = firstText(result);
-    expect(text).toContain("ALL organizations");
-    // and must not let the caller read an unscoped miss as "does not exist"
-    expect(text.toLowerCase()).toContain("organization_id");
-  });
-
-  it("does not flag an organization-scoped search", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse(createJsonApiResponse([]))
-    );
-
-    const result = await client.callTool({
-      name: "search_passwords",
-      arguments: { organization_id: 8637099 },
-    });
-
-    expect(firstText(result)).not.toContain("ALL organizations");
-  });
-
-  // See the equivalent search_configurations test: the warning must track the
-  // filter that was actually sent, not the raw argument.
-  it("flags the search when a falsy organization_id drops the filter", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse(createJsonApiResponse([]))
-    );
-
-    const result = await client.callTool({
-      name: "search_passwords",
-      arguments: { organization_id: 0 },
-    });
-
-    const url = decodeURIComponent(mockFetch.mock.calls[0][0] as string);
-    expect(url).not.toContain("filter[organization-id]");
-    expect(firstText(result)).toContain("ALL organizations");
-  });
-
-  it("surfaces an IT Glue 404 rather than reporting an empty result", async () => {
-    const client = await connectPasswordClient();
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      text: async () => '{"errors":[{"status":404,"title":"Not Found"}]}',
-    } as Response);
-
-    const result = await client.callTool({
-      name: "get_password",
-      arguments: { id: "does-not-exist" },
-    });
-
-    expect(isError(result)).toBe(true);
-    expect(firstText(result)).toContain("404");
+    const { prompts } = await client.listPrompts();
+    expect(prompts.map((p) => p.name)).not.toContain("password-audit");
+    await expect(
+      client.getPrompt({ name: "password-audit", arguments: { org_name: "Contoso" } }),
+    ).rejects.toThrow(/Unknown prompt/);
   });
 });
 
