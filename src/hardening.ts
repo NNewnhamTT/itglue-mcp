@@ -7,8 +7,9 @@
  * on the instance, so the handlers registered afterwards are wrapped without
  * editing upstream code:
  *
- *   tools/call:   guard (audit, access policy) -> removed tools -> PII -> upstream
- *   tools/list:   removed tools hidden; document card link dropped when PII is on
+ *   tools/call:   guard (audit, access policy) -> removed tools -> PII -> fields/count_only -> upstream
+ *   tools/list:   removed tools hidden; fields/count_only added (shaping.ts);
+ *                 document card link dropped when PII is on
  *   prompts/list, prompts/get: removed prompts hidden and refused
  *
  * Call it right after `new Server(...)`, before any handler is registered.
@@ -30,6 +31,7 @@ import {
 import { guardCallTool, type GuardConfig } from "./guard/wrap-guard.js";
 import { ANONYMOUS, type Identity } from "./guard/identity.js";
 import { piiCallTool, stripCardMeta } from "./pii/wrap-server.js";
+import { addShapingParams, shapeCallTool } from "./shaping.js";
 import type { PiiContext } from "./pii/mask-json.js";
 
 export type CallToolHandler = (
@@ -98,7 +100,7 @@ export function hardenServer(server: Server, options: HardeningOptions = {}): vo
   ) => {
     if (schema === CallToolRequestSchema) {
       // Innermost first. The one applied last is outermost: the guard.
-      let wrapped: CallToolHandler = handler as CallToolHandler;
+      let wrapped: CallToolHandler = shapeCallTool(handler as CallToolHandler);
       if (options.pii) wrapped = piiCallTool(wrapped, options.pii);
       wrapped = removedToolsCallTool(wrapped);
       if (options.guard) {
@@ -114,7 +116,7 @@ export function hardenServer(server: Server, options: HardeningOptions = {}): vo
     if (schema === ListToolsRequestSchema) {
       return original(schema, async (request, extra) => {
         const result = (await handler(request, extra)) as { tools: ToolDef[] };
-        let tools = result.tools.filter((t) => !REMOVED_TOOLS.has(t.name));
+        let tools = result.tools.filter((t) => !REMOVED_TOOLS.has(t.name)).map(addShapingParams);
         if (options.pii) tools = tools.map(stripCardMeta);
         return { ...result, tools };
       });
