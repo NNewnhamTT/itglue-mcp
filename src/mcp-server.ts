@@ -21,6 +21,10 @@ import { registerPromptHandlers } from "./prompts.js";
 import { registerResourceHandlers } from "./resources.js";
 import { buildDocumentCard, DOCUMENT_CARD_META } from "./card.builder.js";
 import { applyUntrustedContentMarkers } from "./utils/untrusted-content.js";
+import { hardenServer } from "./hardening.js";
+import { loadGuardConfig } from "./guard/wrap-guard.js";
+import type { Identity } from "./guard/identity.js";
+import { loadPiiConfig, createPiiContext } from "./pii/index.js";
 
 
 // IT Glue region configuration
@@ -1134,7 +1138,15 @@ export function createClient(credentials: GatewayCredentials): ITGlueClient {
  * elicitation helpers resolve the right server even after await gaps. See
  * `utils/server-ref.ts` for why this matters.
  */
-export function createMcpServer(credentialOverrides?: GatewayCredentials): Server {
+export function createMcpServer(
+  credentialOverrides?: GatewayCredentials,
+  options: { identity?: Identity } = {},
+): Server {
+  // Throws on a bad PII_* / MCP_AUDIT / MCP_POLICY setting, so a misconfigured
+  // server fails closed instead of serving unmasked or unguarded data.
+  const piiConfig = loadPiiConfig();
+  const guardConfig = loadGuardConfig();
+
   const server = new Server(
     {
       name: "itglue-mcp",
@@ -1154,6 +1166,23 @@ export function createMcpServer(credentialOverrides?: GatewayCredentials): Serve
       },
     }
   );
+
+  // TekTrendz hardening: must wrap setRequestHandler before any handler is
+  // registered. Password tools are removed in every mode (see hardening.ts).
+  // PII tokens are scoped to the IT Glue credential, hashed in createPiiContext.
+  const piiCredentials = credentialOverrides
+    ? sanitizeCredentials(credentialOverrides)
+    : getCredentialsFromEnv();
+  hardenServer(server, {
+    identity: options.identity,
+    guard: guardConfig,
+    pii: piiConfig
+      ? createPiiContext(
+          piiConfig,
+          `${piiCredentials.region}:${piiCredentials.baseUrl ?? ""}:${piiCredentials.apiKey ?? piiCredentials.jwt ?? ""}`,
+        )
+      : undefined,
+  });
 
   // Register prompt handlers
   registerPromptHandlers(server);

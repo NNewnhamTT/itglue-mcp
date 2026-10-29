@@ -2,6 +2,35 @@
 
 A Model Context Protocol (MCP) server that provides Claude with access to IT Glue documentation and asset management.
 
+## TekTrendz fork: hardening
+
+This fork (branch `tektrendz-hardening`) adds the same controls as the TekTrendz
+ConnectWise Manage MCP fork. All of it sits in `src/hardening.ts`, `src/guard/`,
+`src/pii/` and `src/auth/`, plus small hooks in `createMcpServer` and the HTTP
+transport, so upstream changes stay easy to merge.
+
+- **Password tools removed.** `search_passwords` and `get_password` are not
+  listed and are refused; attachment tools refuse `resource_type: passwords`;
+  the `password-audit` prompt is hidden. This applies in every mode.
+- **PII masking** (`PII_MODE=on`, `PII_KEY`, optional `PII_PRESIDIO_URL`).
+  Names, usernames, emails, phones, street lines, IP and MAC addresses in tool
+  results become tokens such as `<PERSON_ab12cd34ef>`. Tokens in tool arguments
+  are turned back into real values before the IT Glue call. Masking covers the
+  `<itglue-data>` frame, `structuredContent` and error messages. The document
+  card is dropped while masking is on. A failed analyzer redacts free text.
+- **Audit log and access policy** (`MCP_AUDIT=on`, `MCP_POLICY=read|write|admin`).
+  Read tools are `get_*`, `search_*`, `list_*` and `itglue_health_check`;
+  `delete_*` needs admin; everything else is write.
+- **Caller identity and Entra sign-in.** Behind the signing proxy, the proxy's
+  `X-Mcp-User` / `X-Mcp-Role` headers name the caller (trusted only after
+  `X-Gateway-S2S` verifies). `MCP_OAUTH_ENABLED=true` adds the Entra OAuth
+  routes and token check (`MCP_SERVER_URL`, `AZURE_TENANT_ID`,
+  `AZURE_CLIENT_ID`, `AZURE_AUDIENCE`, `AZURE_REQUIRED_ROLE`, default
+  `ITG.Access`; app roles `ITG.Write` and `ITG.Admin` raise the level).
+
+Deployment: the `itglue` profile of `docker-compose.stack.yml` in the
+ConnectWise Manage MCP fork, which shares its Presidio container and Caddy.
+
 ## One-Click Deployment
 
 [![Deploy to DO](https://www.deploytodo.com/do-btn-blue.svg)](https://cloud.digitalocean.com/apps/new?repo=https://github.com/WYRE-AI/itglue-mcp/tree/main)

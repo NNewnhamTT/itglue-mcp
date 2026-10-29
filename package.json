@@ -39,7 +39,8 @@
   },
   "homepage": "https://github.com/WYRE-AI/itglue-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.31.0"
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "jose": "^6.2.14"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

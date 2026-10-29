@@ -18,9 +18,25 @@
  * Gateway mode never falls back to ITGLUE_* env credentials.
  * /health and /healthz stay unauthenticated and do not read credentials.
  * stdio does not use S2S auth.
+ *
+ * TekTrendz additions (ported from the ConnectWise Manage MCP fork):
+ *   Caller identity for the audit log and access policy (src/guard/): from the
+ *   signing proxy's X-Mcp-User / X-Mcp-Role headers, trusted only after
+ *   X-Gateway-S2S verifies, or from a validated Entra token.
+ *
+ * Entra ID OAuth 2.1 (optional — set MCP_OAUTH_ENABLED=true to activate):
+ *   MCP_OAUTH_ENABLED           - Enable Entra ID auth (default: false)
+ *   MCP_SERVER_URL              - Full public URL of this server (e.g. https://itglue-mcp.contoso.com)
+ *   AZURE_TENANT_ID             - Entra tenant GUID
+ *   AZURE_CLIENT_ID             - App registration client ID
+ *   AZURE_AUDIENCE              - Token audience, typically api://<AZURE_CLIENT_ID>
+ *   AZURE_REQUIRED_ROLE         - App role required on every request (default: ITG.Access)
+ *                                 ITG.Write and ITG.Admin also grant access and raise the level.
+ *   MCP_BEARER_TOKEN            - Static bearer token fallback (user "cli-user")
  */
 
 import { createServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -32,6 +48,22 @@ import {
 } from "./mcp-server.js";
 import { runWithServerRef, bindServerRef } from "./utils/server-ref.js";
 import { verifyS2sHeader, S2S_HEADER } from "./s2s-verify.js";
+import { getEntraConfig, createJwksClient, validateToken } from "./auth/middleware.js";
+import {
+  handleProtectedResource,
+  handleAuthServerMetadata,
+  handleRegister,
+  handleAuthorize,
+  handleToken,
+} from "./auth/routes.js";
+import { AuthError } from "./auth/types.js";
+import {
+  ANONYMOUS,
+  identityFromEntra,
+  identityFromProxyHeaders,
+  type Identity,
+} from "./guard/identity.js";
+import { isValidHostHeader, parseRequestTarget } from "./request-target.js";
 
 /**
  * Public example values. A copied placeholder must not verify as a real secret.
@@ -195,8 +227,66 @@ export async function startHttpTransport(): Promise<HttpServer> {
   }
   const isGatewayMode = process.env.AUTH_MODE === "gateway";
 
+  // Entra ID auth (optional). Same code as the ConnectWise Manage MCP fork.
+  const oauthEnabled = process.env.MCP_OAUTH_ENABLED === "true";
+  const entraConfig = oauthEnabled ? getEntraConfig() : null;
+  const jwksClient = entraConfig ? createJwksClient(entraConfig) : null;
+  if (entraConfig) {
+    console.error(
+      `[auth] Entra ID OAuth enabled — tenant: ${entraConfig.tenantId}, required role: ${entraConfig.requiredRole}`,
+    );
+    if (entraConfig.bearerToken) {
+      console.error("[auth] Static bearer token fallback enabled (CLI/Desktop)");
+    }
+  }
+
   const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    // The request target is parsed against a fixed base, never against the
+    // client-supplied Host header. A malformed Host or target gets 400: it
+    // must not be able to throw here and end the process.
+    const url = isValidHostHeader(req.headers.host) ? parseRequestTarget(req.url) : null;
+    if (!url) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "invalid_request" }));
+      return;
+    }
+
+    // OAuth discovery and proxy endpoints (only when OAuth is on)
+    if (entraConfig) {
+      const route = `${req.method} ${url.pathname}`;
+      if (route === "GET /.well-known/oauth-protected-resource") {
+        handleProtectedResource(res, entraConfig);
+        return;
+      }
+      if (route === "GET /.well-known/oauth-authorization-server") {
+        handleAuthServerMetadata(res, entraConfig);
+        return;
+      }
+      if (route === "POST /register") {
+        handleRegister(req, res, entraConfig).catch((err) => {
+          console.error("[auth] /register error:", err instanceof Error ? err.name : "unknown");
+          if (!res.headersSent) {
+            res.writeHead(500, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "internal_error" }));
+          }
+        });
+        return;
+      }
+      if (route === "GET /authorize") {
+        handleAuthorize(req, res, entraConfig);
+        return;
+      }
+      if (route === "POST /token") {
+        handleToken(req, res, entraConfig).catch((err) => {
+          console.error("[auth] /token error:", err instanceof Error ? err.name : "unknown");
+          if (!res.headersSent) {
+            res.writeHead(502, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "token_proxy_error" }));
+          }
+        });
+        return;
+      }
+    }
 
     // Health endpoints — shallow, unauthenticated liveness. Must not read
     // vendor credentials: gateway mode has none at process start, and a
@@ -208,6 +298,7 @@ export async function startHttpTransport(): Promise<HttpServer> {
           status: "ok",
           transport: "http",
           authMode: isGatewayMode ? "gateway" : "env",
+          oauthEnabled,
           timestamp: new Date().toISOString(),
         })
       );
@@ -236,73 +327,76 @@ export async function startHttpTransport(): Promise<HttpServer> {
         return;
       }
 
-      // In gateway mode, extract credentials from headers. Never fall back
-      // to ITGLUE_* in the process environment — that is not request-scoped.
-      let gatewayCredentials: GatewayCredentials | undefined;
-      if (isGatewayMode) {
-        const headers = req.headers;
-        const apiKey = cleanCredential(
-          headerValue(headers["x-itglue-api-key"]) ?? headerValue(headers["x-api-key"])
+      // The signing proxy in entra mode checks nobody itself and relies on the
+      // Entra check below. If OAuth is off here, nothing would check anyone, so
+      // refuse. Trusted only because X-Gateway-S2S verified above.
+      if (!oauthEnabled && s2sSecret && headerValue(req.headers["x-mcp-auth"]) === "entra") {
+        console.error(
+          "[auth] The signing proxy is in entra mode (PROXY_AUTH=entra) but MCP_OAUTH_ENABLED is not 'true'. Refusing every /mcp request.",
         );
-        const jwt = cleanCredential(headerValue(headers["x-itglue-jwt"]));
-
-        if (!apiKey && !jwt) {
-          res.writeHead(401, { "Content-Type": "application/json" });
-          res.end(
-            JSON.stringify({
-              error: "Missing credentials",
-              message: "Gateway mode requires X-ITGlue-API-Key or X-ITGlue-JWT header",
-              required: ["X-ITGlue-API-Key OR X-ITGlue-JWT"],
-            })
-          );
-          return;
-        }
-
-        const baseUrl = headerValue(headers["x-itglue-base-url"]);
-        const region = headerValue(headers["x-itglue-region"]);
-
-        gatewayCredentials = {
-          apiKey,
-          jwt,
-          region: (region || "us") as ITGlueRegion,
-          baseUrl: baseUrl || undefined,
-        };
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            error: "auth_misconfigured",
+            message: "The proxy expects Entra sign-in but MCP_OAUTH_ENABLED is not true on the server.",
+          }),
+        );
+        return;
       }
 
-      // Stateless: create fresh server + transport for each request
-      const server = createMcpServer(gatewayCredentials);
-      const transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: undefined,
-        enableJsonResponse: true,
-      });
+      // Who is calling, for the audit log and the access policy. The proxy's
+      // X-Mcp-* headers count only because X-Gateway-S2S verified above: only
+      // the proxy holds that secret. Without a secret (insecure dev) they are
+      // ignored. A validated Entra identity replaces them below.
+      let callerIdentity: Identity =
+        (s2sSecret
+          ? identityFromProxyHeaders(
+              headerValue(req.headers["x-mcp-user"]),
+              headerValue(req.headers["x-mcp-role"]),
+            )
+          : undefined) ?? ANONYMOUS;
 
-      res.on("close", () => {
-        transport.close();
-        server.close();
-      });
+      if (entraConfig && jwksClient) {
+        const authHeader = req.headers.authorization;
+        if (!authHeader?.startsWith("Bearer ")) {
+          res.writeHead(401, {
+            "Content-Type": "application/json",
+            "WWW-Authenticate": `Bearer resource_metadata="${entraConfig.serverUrl}/.well-known/oauth-protected-resource"`,
+          });
+          res.end(JSON.stringify({ error: "unauthorized", message: "Bearer token required" }));
+          return;
+        }
+        const token = authHeader.slice(7);
+        // Static bearer token (Claude Code CLI / Desktop). Timing-safe compare.
+        const staticTokenMatch =
+          entraConfig.bearerToken !== undefined &&
+          timingSafeEqual(
+            createHash("sha256").update(token).digest(),
+            createHash("sha256").update(entraConfig.bearerToken).digest(),
+          );
+        if (staticTokenMatch) {
+          callerIdentity = { user: "cli-user", source: "static-token" };
+          serveMcp(req, res, isGatewayMode, callerIdentity);
+          return;
+        }
+        validateToken(token, entraConfig, jwksClient)
+          .then((identity) => {
+            serveMcp(req, res, isGatewayMode, identityFromEntra(identity.upn, identity.roles));
+          })
+          .catch((err) => {
+            if (err instanceof AuthError) {
+              res.writeHead(err.statusCode, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "auth_failed", message: err.message }));
+            } else {
+              console.error("[auth] Unexpected validation error:", err instanceof Error ? err.name : "unknown");
+              res.writeHead(500, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "internal_error" }));
+            }
+          });
+        return;
+      }
 
-      // Bind this request's server into the per-request async context
-      // (not a module-level global) so elicitation helpers resolve *this*
-      // server/transport even after await gaps, and never a concurrent
-      // request's — see utils/server-ref.ts. The whole connect/then/catch
-      // chain must stay inside this callback so the bound context survives
-      // every await gap between here and any later getServerRef() call.
-      runWithServerRef(server, () => {
-        server.connect(transport as unknown as Transport).then(() => {
-          transport.handleRequest(req, res);
-        }).catch((err) => {
-          console.error("MCP transport error:", err);
-          if (!res.headersSent) {
-            res.writeHead(500, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({
-              jsonrpc: "2.0",
-              error: { code: -32603, message: "Internal error" },
-              id: null,
-            }));
-          }
-        });
-      });
-
+      serveMcp(req, res, isGatewayMode, callerIdentity);
       return;
     }
 
@@ -326,6 +420,84 @@ export async function startHttpTransport(): Promise<HttpServer> {
   });
 
   return httpServer;
+}
+
+/**
+ * Serve one /mcp request after S2S and sign-in checks have passed.
+ * Unchanged upstream logic, moved here so it can run after async Entra validation.
+ */
+function serveMcp(
+  req: IncomingMessage,
+  res: ServerResponse,
+  isGatewayMode: boolean,
+  identity: Identity,
+): void {
+  // In gateway mode, extract credentials from headers. Never fall back
+  // to ITGLUE_* in the process environment — that is not request-scoped.
+  let gatewayCredentials: GatewayCredentials | undefined;
+  if (isGatewayMode) {
+    const headers = req.headers;
+    const apiKey = cleanCredential(
+      headerValue(headers["x-itglue-api-key"]) ?? headerValue(headers["x-api-key"])
+    );
+    const jwt = cleanCredential(headerValue(headers["x-itglue-jwt"]));
+
+    if (!apiKey && !jwt) {
+      res.writeHead(401, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          error: "Missing credentials",
+          message: "Gateway mode requires X-ITGlue-API-Key or X-ITGlue-JWT header",
+          required: ["X-ITGlue-API-Key OR X-ITGlue-JWT"],
+        })
+      );
+      return;
+    }
+
+    const baseUrl = headerValue(headers["x-itglue-base-url"]);
+    const region = headerValue(headers["x-itglue-region"]);
+
+    gatewayCredentials = {
+      apiKey,
+      jwt,
+      region: (region || "us") as ITGlueRegion,
+      baseUrl: baseUrl || undefined,
+    };
+  }
+
+  // Stateless: create fresh server + transport for each request
+  const server = createMcpServer(gatewayCredentials, { identity });
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
+
+  res.on("close", () => {
+    transport.close();
+    server.close();
+  });
+
+  // Bind this request's server into the per-request async context
+  // (not a module-level global) so elicitation helpers resolve *this*
+  // server/transport even after await gaps, and never a concurrent
+  // request's — see utils/server-ref.ts. The whole connect/then/catch
+  // chain must stay inside this callback so the bound context survives
+  // every await gap between here and any later getServerRef() call.
+  runWithServerRef(server, () => {
+    server.connect(transport as unknown as Transport).then(() => {
+      transport.handleRequest(req, res);
+    }).catch((err) => {
+      console.error("MCP transport error:", err);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          error: { code: -32603, message: "Internal error" },
+          id: null,
+        }));
+      }
+    });
+  });
 }
 
 // Start the server
