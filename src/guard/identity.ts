@@ -51,8 +51,8 @@ export function identityFromProxyHeaders(
 }
 
 /** Entra app roles that raise access. Create them on the app registration. */
-export const ENTRA_ROLE_WRITE = "ITG.Write";
-export const ENTRA_ROLE_ADMIN = "ITG.Admin";
+export const ENTRA_ROLE_WRITE = "ITGM.Write";
+export const ENTRA_ROLE_ADMIN = "ITGM.Admin";
 
 export function identityFromEntra(upn: string, roles: string[]): Identity {
   const role: AccessLevel | undefined = roles.includes(ENTRA_ROLE_ADMIN)

@@ -28,7 +28,7 @@ export function getEntraConfig(): EntraConfig {
     clientId,
     audience,
     extraAudiences,
-    requiredRole: process.env.AZURE_REQUIRED_ROLE ?? "ITG.Access",
+    requiredRole: process.env.AZURE_REQUIRED_ROLE ?? "ITGM.Access",
     serverUrl: serverUrl.replace(/\/$/, ""),
     bearerToken: process.env.MCP_BEARER_TOKEN || undefined,
   };
@@ -95,7 +95,7 @@ export async function validateToken(
       }
 
       // Validate app role
-      // ITG.Write and ITG.Admin imply access, so a person needs only one role
+      // ITGM.Write and ITGM.Admin imply access, so a person needs only one role
       // assigned (the required role, or one of the two that raise access).
       const roles: string[] = payload.roles ?? [];
       const hasAccess =

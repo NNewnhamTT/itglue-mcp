@@ -29,7 +29,7 @@ const config: EntraConfig = {
   clientId: "test-client-id",
   audience: "api://test-client-id",
   extraAudiences: [],
-  requiredRole: "ITG.Access",
+  requiredRole: "ITGM.Access",
   serverUrl: "https://mcp.example.com",
 };
 
@@ -48,7 +48,7 @@ describe("validateToken", () => {
     vi.mocked(jwtVerify).mockResolvedValueOnce({
       payload: {
         tid: "test-tenant-id",
-        roles: ["ITG.Access"],
+        roles: ["ITGM.Access"],
         upn: "user@example.com",
         name: "Test User",
         oid: "test-oid",
@@ -67,7 +67,7 @@ describe("validateToken", () => {
 
     expect(identity.upn).toBe("user@example.com");
     expect(identity.name).toBe("Test User");
-    expect(identity.roles).toContain("ITG.Access");
+    expect(identity.roles).toContain("ITGM.Access");
     expect(identity.oid).toBe("test-oid");
   });
 
@@ -75,7 +75,7 @@ describe("validateToken", () => {
     vi.mocked(jwtVerify).mockResolvedValueOnce({
       payload: {
         tid: "wrong-tenant-id",
-        roles: ["ITG.Access"],
+        roles: ["ITGM.Access"],
         upn: "user@example.com",
         oid: "test-oid",
         aud: "api://test-client-id",
@@ -116,10 +116,10 @@ describe("validateToken", () => {
     const error = await validateToken("valid-token", config, mockJwks).catch((e) => e);
     expect(error).toBeInstanceOf(AuthError);
     expect((error as AuthError).statusCode).toBe(403);
-    expect(error.message).toContain("ITG.Access");
+    expect(error.message).toContain("ITGM.Access");
   });
 
-  describe("access through ITG.Write or ITG.Admin alone", () => {
+  describe("access through ITGM.Write or ITGM.Admin alone", () => {
     const tokenWith = (roles: string[]) =>
       ({
         payload: {
@@ -138,7 +138,7 @@ describe("validateToken", () => {
         key: {} as unknown as MockJwtVerifyResult["key"],
       }) as unknown as MockJwtVerifyResult;
 
-    it.each([["ITG.Write"], ["ITG.Admin"]])(
+    it.each([["ITGM.Write"], ["ITGM.Admin"]])(
       "accepts a token whose only role is %s, so one role per person is enough",
       async (role) => {
         vi.mocked(jwtVerify).mockResolvedValueOnce(tokenWith([role]));
