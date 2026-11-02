@@ -43,6 +43,7 @@ import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import {
   cleanCredential,
   createMcpServer,
+  describeEnvCredentials,
   type GatewayCredentials,
   type ITGlueRegion,
 } from "./mcp-server.js";
@@ -415,6 +416,8 @@ export async function startHttpTransport(): Promise<HttpServer> {
       console.error(
         `Authentication mode: ${isGatewayMode ? "gateway (header-based)" : "env (environment variables)"}`
       );
+      // Secret-free credential summary (length and format hints only, never the key) to diagnose IT Glue 401s.
+      if (!isGatewayMode) console.error(`[itglue-mcp] ${describeEnvCredentials()}`);
       resolve();
     });
   });

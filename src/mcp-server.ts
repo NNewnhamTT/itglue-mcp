@@ -1116,6 +1116,42 @@ export function getCredentialsFromEnv(): GatewayCredentials {
   });
 }
 
+/**
+ * One-line, secret-free summary of the env credentials for the startup log. It exists to diagnose a 401 from
+ * IT Glue without exposing the key: it reports only presence, lengths and yes/no format checks, never the key
+ * or any part of it. Used only in env auth mode. Never throws.
+ * ASSUMPTION: IT Glue API keys start with "ITG." (the check is a yes/no hint, not validation).
+ */
+export function describeEnvCredentials(): string {
+  try {
+    const raw = process.env.ITGLUE_API_KEY || process.env.X_API_KEY;
+    const creds = getCredentialsFromEnv();
+    const region = creds.region || "us";
+    let target: string;
+    if (creds.baseUrl) {
+      try {
+        target = new URL(creds.baseUrl).host;
+      } catch {
+        target = "(ITGLUE_BASE_URL is not a valid URL)";
+      }
+    } else {
+      const regionUrl = (REGION_URLS as Record<string, string>)[region];
+      target = regionUrl ? new URL(regionUrl).host : `(no API URL for region ${JSON.stringify(region)})`;
+    }
+    const key = creds.apiKey;
+    const keyInfo = key
+      ? `present, length ${key.length} (raw length ${raw?.length ?? 0}), ITG-prefix ${
+          key.startsWith("ITG.") ? "yes" : "no"
+        }, unresolved-vault-reference ${/^@Microsoft\.KeyVault\(/i.test(key) ? "YES" : "no"}`
+      : "MISSING";
+    return `IT Glue API target https://${target}, region ${JSON.stringify(region)}, API key ${keyInfo}, JWT ${
+      creds.jwt ? "present" : "absent"
+    }`;
+  } catch (err) {
+    return `credential summary failed: ${(err as Error).message}`;
+  }
+}
+
 export function createClient(credentials: GatewayCredentials): ITGlueClient {
   if (!credentials.apiKey && !credentials.jwt) {
     throw new Error("No IT Glue API key or JWT provided");
