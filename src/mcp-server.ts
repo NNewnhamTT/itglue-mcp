@@ -22,6 +22,7 @@ import { registerResourceHandlers } from "./resources.js";
 import { buildDocumentCard, DOCUMENT_CARD_META } from "./card.builder.js";
 import { applyUntrustedContentMarkers } from "./utils/untrusted-content.js";
 import { hardenServer } from "./hardening.js";
+import { assertSafeApiPath } from "./path-safety.js";
 import { loadGuardConfig } from "./guard/wrap-guard.js";
 import type { Identity } from "./guard/identity.js";
 import { loadPiiConfig, createPiiContext } from "./pii/index.js";
@@ -373,6 +374,7 @@ export class ITGlueClient {
     path: string,
     params: Record<string, unknown> = {}
   ): Promise<{ data: T[]; meta: PaginationMeta }> {
+    assertSafeApiPath(path);
     const url = `${this.baseUrl}${path}${this.buildQueryString(params)}`;
 
     const response = await fetch(url, {
@@ -417,6 +419,7 @@ export class ITGlueClient {
   }
 
   async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
+    assertSafeApiPath(path);
     const url = `${this.baseUrl}${path}`;
 
     const response = await fetch(url, {
@@ -446,6 +449,7 @@ export class ITGlueClient {
   }
 
   async patch<T>(path: string, body: Record<string, unknown> = {}): Promise<T> {
+    assertSafeApiPath(path);
     const url = `${this.baseUrl}${path}`;
 
     const response = await fetch(url, {
@@ -485,6 +489,7 @@ export class ITGlueClient {
    * path-addressed deletes.
    */
   async delete(path: string, body?: Record<string, unknown>): Promise<void> {
+    assertSafeApiPath(path);
     const url = `${this.baseUrl}${path}`;
 
     const response = await fetch(url, {
