@@ -17,6 +17,9 @@
  * Removed for good (Nickolas, 2026-10-29): the IT Glue password tools and
  * anything that reaches password records. Password values must never reach a
  * model or a transcript. This is not a setting: it applies in every mode.
+ * Path-bound ID arguments must be plain numbers (path-safety.ts, 2026-11-04):
+ * an id such as `../passwords/5` would otherwise be normalised by fetch into a
+ * password request. The client refuses unsafe paths as a second layer.
  */
 
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -33,6 +36,7 @@ import { ANONYMOUS, type Identity } from "./guard/identity.js";
 import { piiCallTool, stripCardMeta } from "./pii/wrap-server.js";
 import { addShapingParams, shapeCallTool } from "./shaping.js";
 import type { PiiContext } from "./pii/mask-json.js";
+import { invalidPathArgument } from "./path-safety.js";
 
 export type CallToolHandler = (
   request: CallToolRequest,
@@ -74,6 +78,12 @@ function removedToolsCallTool(inner: CallToolHandler): CallToolHandler {
     if (typeof resourceType === "string" && REMOVED_RESOURCE_TYPES.has(resourceType.trim().toLowerCase())) {
       return refused(
         "Password records are not available through this server. Nothing was sent to IT Glue.",
+      );
+    }
+    const badArgument = invalidPathArgument(request.params.arguments);
+    if (badArgument) {
+      return refused(
+        `Invalid ${badArgument}: IT Glue IDs are plain numbers. Nothing was sent to IT Glue.`,
       );
     }
     return inner(request, extra);

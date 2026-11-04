@@ -14,6 +14,7 @@
  */
 
 import { classify, isUrlKey } from "./field-rules.js";
+import { REDACTED_SECRET, SECRET_PATTERNS, isSecretKey } from "./secret-rules.js";
 import { TOKEN_PATTERN, type EntityType, type Tokenizer } from "./tokenizer.js";
 import type { TokenStore } from "./store.js";
 
@@ -50,7 +51,8 @@ const PRESIDIO_TYPES: Record<string, EntityType> = {
 interface Span {
   start: number;
   end: number;
-  type: EntityType;
+  /** "SECRET" spans become REDACTED_SECRET, not a token (secret-rules.ts). */
+  type: EntityType | "SECRET";
 }
 
 const PATTERNS: { type: EntityType; re: RegExp }[] = [
@@ -66,6 +68,16 @@ const PATTERNS: { type: EntityType; re: RegExp }[] = [
 
 function patternSpans(text: string): Span[] {
   const spans: Span[] = [];
+  // Secrets first: on overlap the earlier span wins (resolveOverlaps).
+  for (const { re, group } of SECRET_PATTERNS) {
+    for (const m of text.matchAll(re)) {
+      const secret = group === undefined ? m[0] : m[group];
+      if (!secret) continue;
+      // The captured secret ends the match, so its start is derived from the end.
+      const start = group === undefined ? m.index : m.index + m[0].length - secret.length;
+      spans.push({ start, end: m.index + m[0].length, type: "SECRET" });
+    }
+  }
   for (const { type, re } of PATTERNS) {
     for (const m of text.matchAll(re)) {
       spans.push({ start: m.index, end: m.index + m[0].length, type });
@@ -110,6 +122,19 @@ export async function maskJson(root: unknown, ctx: PiiContext): Promise<unknown>
     parent: Record<string, unknown> | undefined,
     assign: (v: unknown) => void,
   ): void => {
+    // A key that names a secret (password, recovery key, ...) hides its whole
+    // value, whatever shape it has. Booleans and null carry no secret.
+    if (
+      key !== undefined &&
+      node !== null &&
+      node !== undefined &&
+      typeof node !== "boolean" &&
+      node !== "" &&
+      isSecretKey(key)
+    ) {
+      assign(REDACTED_SECRET);
+      return;
+    }
     if (typeof node === "string") {
       if (key === undefined) {
         // A bare string at the root or inside an array of strings: scan it.
@@ -208,7 +233,9 @@ export async function maskJson(root: unknown, ctx: PiiContext): Promise<unknown>
     let out = "";
     let cursor = 0;
     for (const s of kept) {
-      out += p.text.slice(cursor, s.start) + tokenFor(s.type, p.text.slice(s.start, s.end));
+      out +=
+        p.text.slice(cursor, s.start) +
+        (s.type === "SECRET" ? REDACTED_SECRET : tokenFor(s.type, p.text.slice(s.start, s.end)));
       cursor = s.end;
     }
     p.assign(out + p.text.slice(cursor));

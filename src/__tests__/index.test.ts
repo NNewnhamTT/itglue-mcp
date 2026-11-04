@@ -3108,7 +3108,8 @@ describe("Document section tools (round-trip)", () => {
       });
 
       expect(isError(result)).toBe(true);
-      expect(firstText(result)).toContain("document_id is required");
+      // The hardening layer (path-safety.ts) now refuses it before the handler runs.
+      expect(firstText(result)).toContain("Invalid document_id");
       expect(mockFetch).not.toHaveBeenCalled();
     });
   });
